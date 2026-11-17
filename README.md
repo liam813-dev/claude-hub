@@ -7,6 +7,7 @@ One page in your browser for all your Claude Code chats. You don't need a pile o
 - **Today page:** what needs you right now, plus dates and deadlines found in your chats ("board meeting Thursday", "renew by Nov 28"). One click turns them into reminders.
 - **Reminders** with Mac notifications. Type them in plain words: "fri 3pm call the bank", "in 2h send the notes".
 - **Alerts** when Claude needs your approval or finishes a long reply.
+- **Plan usage** in the top right: how much of your 5-hour and weekly limits you've used, and when they reset. Hide it with the x. It comes back by itself at 50, 75 and 90%, and the gauge at the top of the sidebar shows it any time.
 - **Context:** how full each chat's memory is, and a one-click hand-off to a fresh chat when it gets too full.
 - **Voice typing** (optional, Apple Silicon Macs). Hold Space to talk. It runs on your Mac and nothing is sent anywhere.
 
@@ -37,6 +38,17 @@ From then on, typing `claude` in Terminal also opens the Hub if it isn't already
 - Reminders and alerts ask to show notifications.
 - Voice typing asks for the microphone.
 
+### Or let Claude install it
+
+In Terminal, type `claude`, then paste: **set up the Hub from** followed by this repository's link. Claude follows the steps below and asks before it changes anything.
+
+### Steps for Claude (when someone asks you to install this)
+
+1. Clone the repository into `~/claude-hub` and keep it there, because the `claude-hub` command runs from that folder. If `~/claude-hub` already exists, run `git -C ~/claude-hub pull` instead.
+2. Check `node --version` is 18 or newer. If Node.js is missing and Homebrew is installed, ask before running `brew install node`. Otherwise open https://nodejs.org/en/download, ask them to install the LTS version, and wait.
+3. Run `sh install.sh` from `~/claude-hub`. It backs up what it changes and opens the Hub in the browser.
+4. Tell them, in plain words: their existing Claude Code chats are already in the Hub. Bookmark http://127.0.0.1:4517. Open a new Terminal window, and from then on typing `claude` also opens the Hub. Alerts start with the next Claude chat they open.
+
 ## Everyday use
 
 - Type `claude` in Terminal like before, or click **New chat** in the Hub.
@@ -57,7 +69,7 @@ The installer backs up each file before changing it:
 
 - Adds the `claude-hub` command in `~/.local/bin`.
 - Adds a short block to `~/.zshrc` so typing `claude` also starts the Hub.
-- Adds two hooks to `~/.claude/settings.json` so Claude can tell the Hub when it needs you.
+- Adds two hooks to `~/.claude/settings.json` so Claude can tell the Hub when it needs you, and a status line that passes along your plan usage (only if you don't already have a status line).
 
 The Hub only listens on your own Mac (127.0.0.1), reads your Claude Code history without changing it, and keeps its own notes and reminders in `~/.session-dashboard`.
 
@@ -67,7 +79,7 @@ The Hub only listens on your own Mac (127.0.0.1), reads your Claude Code history
 sh uninstall.sh
 ```
 
-Removes the command, the shell block and the hooks. Your chats are never touched. To also remove the Hub's notes and reminders, delete the `~/.session-dashboard` folder.
+Removes the command, the shell block, the hooks and the status line. Your chats are never touched. To also remove the Hub's notes and reminders, delete the `~/.session-dashboard` folder.
 
 ## Updating
 

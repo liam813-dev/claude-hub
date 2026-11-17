@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 'use strict';
-// Adds or removes the Hub's two hooks in ~/.claude/settings.json, keeping everything else.
+// Adds or removes the Hub's two hooks and its status line in ~/.claude/settings.json,
+// keeping everything else.
 //   node hooks.js install   <settings.json>
 //   node hooks.js uninstall <settings.json>
 // Notification (approval needed / waiting for you) and Stop (a reply finished) post the
 // event to the Hub on 127.0.0.1. They run in the background and never block Claude.
+// The status line sends the Hub your plan usage (5-hour and weekly %) and prints nothing.
+// It is only added when you don't already have a status line of your own.
 
 const fs = require('node:fs');
 
@@ -32,6 +35,8 @@ if (fs.existsSync(file)) {
   }
 }
 
+const STATUS = { type: 'command', command: "curl -s -m 1 -X POST -H 'x-sessions: 1' -H 'content-type: application/json' --data-binary @- http://127.0.0.1:4517/api/statusline >/dev/null 2>&1; true", padding: 0 };
+const ourStatus = (x) => !!(x && String(x.command || '').includes('127.0.0.1:4517/api/statusline'));
 const ours = (group) => (group.hooks || []).some((h) => String(h.command || '').includes(MARK));
 settings.hooks = settings.hooks || {};
 let changed = false;
@@ -49,9 +54,16 @@ for (const [event, group] of Object.entries(WANT)) {
 }
 if (!Object.keys(settings.hooks).length) delete settings.hooks;
 
+let statusNote = '';
+if (action === 'install') {
+  if (!settings.statusLine) { settings.statusLine = STATUS; changed = true; }
+  else if (!ourStatus(settings.statusLine)) statusNote = 'You already have a status line, so it was left alone. Usage still shows from replies in the Hub.';
+} else if (ourStatus(settings.statusLine)) { delete settings.statusLine; changed = true; }
+
 if (changed) {
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
   console.log(action === 'install' ? 'Added the Hub hooks to Claude Code settings.' : 'Removed the Hub hooks from Claude Code settings.');
 } else {
   console.log(action === 'install' ? 'Claude Code hooks were already set up.' : 'No Hub hooks to remove.');
 }
+if (statusNote) console.log(statusNote);

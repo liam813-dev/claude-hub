@@ -450,6 +450,30 @@ code .flink { border-bottom: none; }
 .palette .empty { padding: 12px; color: var(--muted-foreground); font-size: 13px; }
 .nudge.on { border-color: var(--primary); color: var(--primary); background: color-mix(in oklch, var(--primary) 10%, transparent); }
 
+#usage { position: fixed; z-index: 40; width: 200px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px 12px; font-size: 12px; }
+#usage .uhead { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin: -2px -4px 0 0; }
+#usage .iconbtn { width: 22px; height: 22px; }
+#usage .iconbtn svg { width: 14px; height: 14px; }
+#usage .iconbtn:hover { background: var(--hover); }
+#usage .urow { margin-top: 10px; }
+#usage .utop { display: flex; justify-content: space-between; color: var(--muted-foreground); }
+#usage .utop b { color: var(--foreground); font-weight: 600; }
+#usage .ubar { height: 6px; border-radius: 3px; background: var(--hover); margin: 5px 0 4px; overflow: hidden; }
+#usage .ubar i { display: block; height: 100%; border-radius: 3px; background: var(--primary); transition: width 0.4s ease; }
+#usage .ubar.warn i { background: var(--warning); }
+#usage .ubar.danger i { background: var(--destructive); }
+#usage .uwhen { color: var(--faint); font-size: 11px; }
+#usage .ufoot { margin-top: 10px; }
+#usage .upill { display: none; }
+#usage.compact { width: auto; padding: 0; border-radius: 999px; }
+#usage.compact > :not(.upill) { display: none; }
+#usage.compact .upill { all: unset; display: flex; gap: 6px; align-items: center; padding: 5px 12px; cursor: pointer; font-weight: 500; color: var(--muted-foreground); }
+#usage .upill .warn { color: var(--warning); }
+#usage .upill .danger { color: var(--destructive); }
+#usage .upill .sep { color: var(--faint); }
+#usage.flash { animation: uflash 1.2s ease 2; }
+@keyframes uflash { 50% { box-shadow: 0 0 0 3px color-mix(in oklch, var(--warning) 45%, transparent); } }
+.side-head .iconbtn.on { color: var(--foreground); }
 #toast { position: fixed; bottom: 24px; left: 50%; transform: translate(-50%, 16px); background: var(--foreground); color: var(--background); padding: 9px 14px; border-radius: 8px; font-weight: 500; opacity: 0; pointer-events: none; transition: all 0.18s; z-index: 10; max-width: 80vw; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
@@ -478,6 +502,7 @@ code .flink { border-bottom: none; }
 <aside id="side">
   <div class="side-head">
     <button class="name" id="brand">Hub</button>
+    <button class="iconbtn" id="usagebtn" title="Plan usage"></button>
     <button class="iconbtn" id="refresh" title="Refresh"></button>
     <button class="iconbtn" id="theme" title="Light or dark"></button>
   </div>
@@ -497,6 +522,7 @@ code .flink { border-bottom: none; }
 
 <main id="main"><div class="page" id="view"></div></main>
 <div id="toast"></div>
+<div id="usage" hidden></div>
 
 <script>
 'use strict';
@@ -643,6 +669,8 @@ async function loadAll() {
   S.tags = d.tags;
   S.latest = d.models || {};
   S.defaultModel = d.defaultModel || '';
+  S.defaultEffort = d.defaultEffort || '';
+  if ('usage' in d) setUsageData(d.usage);
   S.byId = new Map(d.sessions.map((s) => [s.id, s]));
   S.lastFull = Date.now();
   applyLive(d.live);
@@ -654,6 +682,7 @@ async function pollLive() {
   if (document.hidden) return;
   try {
     const d = await api('/api/live');
+    if ('usage' in d) setUsageData(d.usage);
     const sig = JSON.stringify(d.live);
     if (sig === S.liveSig) return;
     S.liveSig = sig;
@@ -1138,7 +1167,8 @@ async function startNew() {
   S.starting = true;
   const cwd = $('#ncwd').value;
   const model = $('#npick') ? $('#npick').value : '';
-  const effort = $('#nepick') ? $('#nepick').value : '';
+  const pickedEffort = $('#nepick') ? $('#nepick').value : '';
+  const effort = pickedEffort && pickedEffort !== S.defaultEffort ? pickedEffort : '';
   renderNew();
   $('#ntext').value = text;
   const plan = !!S.plan.new;
@@ -1548,11 +1578,20 @@ function modelSelect(s, id) {
   return `<select class="modelpick" id="${id || 'mpick'}" title="${s ? 'Model this chat uses. Pick another to switch on your next message.' : 'Model for the new chat'}">${opts}</select>`;
 }
 
-const EFFORT_OPTS = [['', 'Effort'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
+const EFFORT_OPTS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
+// An open tab keeps the effort it last ran at. A closed chat replies at your default
+// (effortLevel in settings), so that is what it shows as current.
+const currentEffort = (s) => (s && s.live && !s.live.bg && s.effort) || S.defaultEffort || '';
 function effortSelect(s, id) {
   if (s && s.src === 'codex') return '';
-  const cur = (s && S.efforts[s.id]) || '';
-  return `<select class="modelpick" id="${id || 'epick'}" title="How hard it thinks for this message">${EFFORT_OPTS.map(([v, l]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${v ? 'Effort: ' + l : 'Effort: same'}</option>`).join('')}</select>`;
+  const now = currentEffort(s);
+  const pick = (s ? S.efforts[s.id] : '') || now;
+  const tag = s ? ' (current)' : ' (default)';
+  const opts = EFFORT_OPTS.slice();
+  if (now && !opts.some(([v]) => v === now)) opts.unshift([now, now[0].toUpperCase() + now.slice(1)]);
+  const html = (now ? '' : `<option value=""${pick ? '' : ' selected'}>Effort: default${tag}</option>`)
+    + opts.map(([v, l]) => `<option value="${v}"${v === pick ? ' selected' : ''}>Effort: ${l}${v === now ? tag : ''}</option>`).join('');
+  return `<select class="modelpick" id="${id || 'epick'}" title="${s ? 'How hard Claude thinks. Pick another to change it from your next message.' : 'How hard Claude thinks in the new chat'}">${html}</select>`;
 }
 
 // The "/" menu: Claude Code's own commands, modes, and every skill you have.
@@ -1766,19 +1805,20 @@ async function sendMsg(override) {
   toBottom();
   const allowEdits = override ? true : !!S.allowEdits[s.id];
   const model = S.models[s.id] && S.models[s.id] !== s.model ? S.models[s.id] : '';
-  const effort = S.efforts[s.id] || '';
+  const effort = S.efforts[s.id] && S.efforts[s.id] !== currentEffort(s) ? S.efforts[s.id] : '';
   const plan = !!S.plan[s.id];
   const sendText = plan && s.live ? 'Plan first: show me the plan and wait for my OK before changing anything.\n\n' + text : text;
   S.plan[s.id] = false;
   S.efforts[s.id] = '';
   S.models[s.id] = '';
-  if ($('#epick')) $('#epick').value = '';
   let r;
   try { r = await api('/api/send', { id: s.id, src: s.src, text: sendText, files, allowEdits, model, effort, plan }); }
   catch (e) { r = { ok: false, error: 'The Hub is not answering.' }; }
   finally { S.sending[s.id] = false; }
   if (r.ok && model) { s.model = model; if ($('#sbadge')) $('#sbadge').innerHTML = badgeHtml(s); }
   if ($('#mpick')) $('#mpick').outerHTML = modelSelect(s);
+  if (r.ok && effort && s.live && !s.live.bg) s.effort = effort;
+  if ($('#epick')) $('#epick').outerHTML = effortSelect(s);
   if (!r.ok && r.typed) {
     S.pending = null;
     $('#tail').innerHTML = tailHtml(s);
@@ -1808,8 +1848,104 @@ function renderPage() {
   else if (S.page === 'skills') renderSkills();
   else if (S.page === 'new') { const keep = $('#ntext') ? $('#ntext').value : ''; renderNew(); if (keep) $('#ntext').value = keep; }
   else renderToday();
+  requestAnimationFrame(placeUsage);
 }
 function renderAll() { renderSide(); renderPage(); }
+
+// ---------- plan usage card ----------
+// Top right, in the empty space beside the page; a small pill when there is no room.
+// The x hides it. It comes back by itself at 50, 75, 90 and 100% of either limit,
+// and the gauge at the top of the sidebar shows or hides it any time.
+const MILESTONES = [50, 75, 90, 100];
+const levelOf = (pct) => MILESTONES.filter((m) => pct >= m).length;
+const sameWindow = (a, b) => !!(a && b && Math.abs((a.resetsAt || 0) - (b.resetsAt || 0)) < 120000);
+const usageHidden = () => localStorage.getItem('hub-usage-hidden') === '1';
+function lsJson(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch { return null; } }
+function usageWindows() {
+  const u = S.usage;
+  if (!u) return [];
+  return [['five', '5-hour limit', '5h'], ['week', 'Weekly limit', 'Week']].filter(([k]) => u[k]).map(([k, label, short]) => {
+    const w = u[k];
+    const over = !!(w.resetsAt && w.resetsAt < Date.now());
+    return { k, label, short, pct: over ? 0 : w.pct, resetsAt: w.resetsAt, over };
+  });
+}
+function setUsageData(u) {
+  const sig = JSON.stringify(u || null);
+  if (sig === S.usageSig) return;
+  S.usageSig = sig;
+  S.usage = u || null;
+  let seen = lsJson('hub-usage-seen');
+  const first = !seen;
+  seen = seen || {};
+  let crossed = null;
+  for (const w of usageWindows()) {
+    const base = sameWindow(seen[w.k], w) ? seen[w.k].lvl : 0;
+    const lvl = levelOf(w.pct);
+    if (lvl > base && !first) crossed = crossed && crossed.pct > w.pct ? crossed : w;
+    seen[w.k] = { lvl: Math.max(lvl, base), resetsAt: w.resetsAt };
+  }
+  localStorage.setItem('hub-usage-seen', JSON.stringify(seen));
+  if (crossed) {
+    localStorage.removeItem('hub-usage-hidden');
+    S.usageFlash = true;
+    const name = crossed.k === 'five' ? '5-hour' : 'weekly';
+    toast(crossed.pct >= 100 ? `You've hit your ${name} limit. It resets ${fmtDue(crossed.resetsAt)}.` : `You've used ${Math.round(crossed.pct)}% of your ${name} limit.`);
+  }
+  renderUsage();
+}
+function renderUsage() {
+  const box = $('#usage');
+  if (!box) return;
+  const hidden = usageHidden();
+  $('#usagebtn').classList.toggle('on', !hidden);
+  $('#usagebtn').title = hidden ? 'Show plan usage' : 'Hide plan usage';
+  box.hidden = hidden;
+  if (hidden) return;
+  const wins = usageWindows();
+  const sev = (p) => (p >= 90 ? 'danger' : p >= 75 ? 'warn' : '');
+  const reset = (w) => (w.over ? 'New window started' : w.resetsAt ? 'Resets ' + fmtDue(w.resetsAt) : '');
+  const rows = wins.length
+    ? wins.map((w) => `<div class="urow"><div class="utop"><span>${w.label}</span><b>${Math.round(w.pct)}%</b></div><div class="ubar ${sev(w.pct)}"><i style="width:${Math.min(100, w.pct)}%"></i></div><div class="uwhen">${esc(reset(w))}</div></div>`).join('')
+    : '<div class="urow uwhen">Shows up after Claude\'s next reply.</div>';
+  const pill = wins.length ? wins.map((w) => `<span class="${sev(w.pct)}">${w.short} ${Math.round(w.pct)}%</span>`).join('<span class="sep">·</span>') : 'Usage';
+  const at = S.usage && S.usage.at;
+  box.innerHTML = `<div class="uhead"><span>Plan usage</span><button class="iconbtn" data-uact="hide" title="Hide. It comes back at 50, 75 and 90%.">${icon('x')}</button></div>${rows}`
+    + (at ? `<div class="uwhen ufoot">Updated ${ago(at) === 'now' ? 'just now' : ago(at) + ' ago'}</div>` : '')
+    + `<button class="upill" data-uact="open" title="Plan usage">${pill}</button>`;
+  if (S.usageFlash) { S.usageFlash = false; box.classList.remove('flash'); void box.offsetWidth; box.classList.add('flash'); }
+  placeUsage();
+}
+function placeUsage() {
+  const box = $('#usage');
+  if (!box || box.hidden) return;
+  const main = $('#main').getBoundingClientRect();
+  const view = $('#view');
+  const contentRight = view.getBoundingClientRect().right - (parseFloat(getComputedStyle(view).paddingRight) || 0);
+  const room = main.right - contentRight - 24;
+  box.classList.toggle('compact', room < 200 && !S.usageOpen);
+  box.style.top = Math.round(main.top + 12) + 'px';
+  box.style.right = Math.round(window.innerWidth - main.right + 12) + 'px';
+}
+$('#usage').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-uact]');
+  if (!b) return;
+  if (b.dataset.uact === 'open') { S.usageOpen = true; return placeUsage(); }
+  localStorage.setItem('hub-usage-hidden', '1');
+  S.usageOpen = false;
+  renderUsage();
+  toast('Usage hidden. It comes back at 50, 75 and 90%. The gauge at the top left shows it any time.');
+});
+$('#usagebtn').onclick = () => {
+  if (usageHidden()) localStorage.removeItem('hub-usage-hidden'); else localStorage.setItem('hub-usage-hidden', '1');
+  S.usageOpen = false;
+  renderUsage();
+};
+document.addEventListener('click', (e) => {
+  if (S.usageOpen && !e.target.closest('#usage')) { S.usageOpen = false; placeUsage(); }
+});
+window.addEventListener('resize', placeUsage);
+setInterval(renderUsage, 60000);
 
 function go(page, id) {
   if (page === 'open') page = 'history';
@@ -1842,6 +1978,7 @@ async function focusTab(pid) {
 // ---------- events ----------
 
 function paintChrome() {
+  $('#usagebtn').innerHTML = icon('gauge');
   $('#refresh').innerHTML = icon('refresh');
   $('#theme').innerHTML = icon(document.documentElement.dataset.theme === 'dark' ? 'sun' : 'moon');
   $('#searchIcon').innerHTML = icon('search');

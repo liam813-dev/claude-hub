@@ -255,6 +255,7 @@ async function scanClaudeFile(file, st) {
         if (ctx > 0) { e.ctx = ctx; if (ctx > e.peakCtx) e.peakCtx = ctx; }
       }
       if (m.model && !String(m.model).startsWith('<')) e.model = m.model;
+      if (typeof o.effort === 'string' && o.effort) e.effort = o.effort;
       for (const b of c) {
         if (b && b.type === 'tool_use' && b.id) {
           const label = toolLabel(b.name, b.input);
@@ -532,7 +533,7 @@ async function listSessions() {
       cwd: e.cwd || e.startCwd, branch: e.branch,
       created: e.firstTs, updated: Math.round(e.mtimeMs), turns: e.turns,
       prompted: e.lastPromptTs || 0, answered: e.lastAssistantTs || 0, seen: m.seen || 0,
-      ctx: e.ctx || 0, ctxLimit: ctxLimit(e), model: e.model || '',
+      ctx: e.ctx || 0, ctxLimit: ctxLimit(e), model: e.model || '', effort: e.effort || '',
       lastTool: e.lastTool || null, pendingTool: firstPending(e), permMode: e.permMode || '',
       prs: e.prs, mb: Math.round(e.size / 104857.6) / 10,
       tag: m.tag || autoTag(text, e.cwd), manualTag: !!m.tag,
@@ -933,7 +934,9 @@ function startRun({ id, src, text, cwd, isNew, files = [], allowEdits = false, d
     try { job.tail = fs.readFileSync(errFile, 'utf8').slice(-1500); } catch {}
     if (src !== 'codex') {
       try {
-        const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n');
+        const content = fs.readFileSync(outFile, 'utf8');
+        setUsage(usageFromText(content, Date.now()));
+        const lines = content.trim().split('\n');
         for (let i = lines.length - 1; i >= 0 && i >= lines.length - 5; i--) {
           if (!lines[i].includes('"type":"result"')) continue;
           const o = JSON.parse(lines[i]);
@@ -953,6 +956,119 @@ function startRun({ id, src, text, cwd, isNew, files = [], allowEdits = false, d
   return { ok: true, mode: 'background' };
 }
 
+// ---------- plan usage (5-hour and weekly limits) ----------
+// Two sources, both from Claude Code itself: the rate_limit_event lines background replies
+// print in stream-json, and the status line JSON open Terminal tabs send to /api/statusline.
+// Within one window usage only goes up, so a stale reading never lowers the number.
+
+const USAGE_FILE = path.join(STATE_DIR, 'usage.json');
+let usage = readJson(USAGE_FILE, null);
+let usageCheckedAt = 0;
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const clampPct = (x) => Math.max(0, Math.min(100, Math.round(x * 10) / 10));
+
+function mergeWindow(a, b) {
+  if (!b) return a || null;
+  if (!a) return b;
+  if (b.resetsAt > a.resetsAt + 60000) return b;
+  if (b.resetsAt < a.resetsAt - 60000) return a;
+  return b.pct >= a.pct ? b : a;
+}
+
+function setUsage(next) {
+  if (!next || (!next.five && !next.week)) return;
+  const prev = usage || {};
+  const merged = { five: mergeWindow(prev.five, next.five), week: mergeWindow(prev.week, next.week), at: Math.max(prev.at || 0, next.at || 0) };
+  if (JSON.stringify(merged) === JSON.stringify(usage)) return;
+  usage = merged;
+  Promise.resolve(writeAtomic(USAGE_FILE, JSON.stringify(usage))).catch(() => {});
+}
+
+function usageFromEvent(info, at) {
+  if (!info || typeof info !== 'object') return null;
+  const win = (x) => (x && typeof x.utilization === 'number' ? { pct: clampPct(x.utilization * 100), resetsAt: (Number(x.resetsAt) || 0) * 1000 } : null);
+  const w = info.unifiedWindows || {};
+  const out = { five: win(w.five_hour), week: win(w.seven_day), at };
+  if (!out.five && !out.week && typeof info.utilization === 'number') {
+    if (info.rateLimitType === 'five_hour') out.five = win(info);
+    else if (info.rateLimitType === 'seven_day') out.week = win(info);
+  }
+  return out;
+}
+
+function usageFromText(txt, at) {
+  const i = String(txt || '').lastIndexOf('"type":"rate_limit_event"');
+  if (i < 0) return null;
+  const start = txt.lastIndexOf('\n', i) + 1;
+  const end = txt.indexOf('\n', i);
+  try { return usageFromEvent(JSON.parse(txt.slice(start, end < 0 ? undefined : end)).rate_limit_info, at); } catch { return null; }
+}
+
+function usageFromStatus(b) {
+  const r = b && b.rate_limits;
+  if (!r || typeof r !== 'object') return null;
+  const win = (x) => (x && typeof x.used_percentage === 'number' ? { pct: clampPct(x.used_percentage), resetsAt: (Number(x.resets_at) || 0) * 1000 } : null);
+  return { five: win(r.five_hour), week: win(r.seven_day), at: Date.now() };
+}
+
+// How far each reply's output has been read, so every refresh reads only what is new.
+const usageOffsets = new Map();
+async function scanRunUsage(file, st) {
+  let from = usageOffsets.get(file) || 0;
+  if (st.size < from) from = 0;
+  if (st.size - from > 64 << 20) from = st.size - (64 << 20);
+  if (st.size <= from) return;
+  const fh = await fsp.open(file, 'r');
+  try {
+    const buf = Buffer.alloc(st.size - from);
+    await fh.read(buf, 0, buf.length, from);
+    const nl = buf.lastIndexOf(10);
+    if (nl < 0) return;
+    usageOffsets.set(file, from + nl + 1);
+    setUsage(usageFromText(buf.toString('utf8', 0, nl + 1), Math.round(st.mtimeMs)));
+  } finally { await fh.close(); }
+}
+
+// Replies still running (or started before a Hub restart) keep their output in runs/*.out.
+async function refreshUsage() {
+  if (Date.now() - usageCheckedAt < 8000) return;
+  usageCheckedAt = Date.now();
+  const dir = path.join(STATE_DIR, 'runs');
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch { return; }
+  for (const n of names) {
+    if (!n.endsWith('.out')) continue;
+    const f = path.join(dir, n);
+    let st;
+    try { st = await fsp.stat(f); } catch { continue; }
+    if (usageOffsets.get(f) === st.size) continue;
+    try { await scanRunUsage(f, st); } catch {}
+  }
+}
+
+// After typing /model or /effort into a tab, Claude Code logs its answer as a
+// <local-command-stdout> line. Returns true as soon as that shows up.
+async function waitForCommandAck(file, from, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await sleepMs(100);
+    let size = 0;
+    try { size = (await fsp.stat(file)).size; } catch { continue; }
+    if (size <= from) continue;
+    try {
+      const fh = await fsp.open(file, 'r');
+      try {
+        const len = Math.min(size - from, 256 * 1024);
+        const buf = Buffer.alloc(len);
+        await fh.read(buf, 0, len, size - len);
+        if (buf.toString('utf8').includes('<local-command-stdout>')) return true;
+      } finally { await fh.close(); }
+    } catch {}
+  }
+  return false;
+}
+
 async function sendMessage(id, src, raw, fileList, allowEdits, model, effort, planMode) {
   const files = uploadPaths(fileList);
   const text = withAttachments(cleanText(raw), files);
@@ -970,10 +1086,14 @@ async function sendMessage(id, src, raw, fileList, allowEdits, model, effort, pl
       if (!live.tty) return { ok: false, error: 'That session has no terminal attached.' };
       if (live.status === 'idle') {
         // Switching model in an open tab is the same as typing /model there first.
+        const tfile = Object.keys(index.files).find((f) => index.files[f].id === id);
         for (const cmd of [MODELS.has(model) && '/model ' + model, EFFORTS.has(effort) && '/effort ' + effort].filter(Boolean)) {
+          let from = 0;
+          try { from = fs.statSync(tfile).size; } catch {}
           const m = await typeIntoTab(live.tty, cmd);
           if (!m.ok) return m;
-          await new Promise((r) => setTimeout(r, 1800));
+          if (!tfile || !(await waitForCommandAck(tfile, from, 3000))) await sleepMs(tfile ? 0 : 1800);
+          await sleepMs(150);
         }
         return typeIntoTab(live.tty, text);
       }
@@ -2344,7 +2464,8 @@ const server = http.createServer(async (req, res) => {
           const ev = hookEvents.get(l.id) || null;
           return e ? { ...l, ev, ctx: e.ctx || 0, ctxLimit: ctxLimit(e), lastTool: e.lastTool || null, pendingTool: firstPending(e), mtime: Math.round(e.mtimeMs), act: Math.max(e.lastPromptTs || 0, e.lastAssistantTs || 0) } : { ...l, ev };
         });
-        return send(res, 200, { live });
+        refreshUsage().catch(() => {});
+        return send(res, 200, { live, usage });
       }
       if (p === '/api/sessions') {
         loadConfig();
@@ -2354,6 +2475,8 @@ const server = http.createServer(async (req, res) => {
           tags: rules.map((r) => ({ name: r.name, color: r.color })),
           models: latestModels(),
           defaultModel: String(readJson(SETTINGS_FILE, {}).model || ''),
+          defaultEffort: String(readJson(SETTINGS_FILE, {}).effortLevel || ''),
+          usage,
           configFile: CONFIG_FILE,
         });
       }
@@ -2419,6 +2542,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, await focusPid(pid));
       }
       if (p === '/api/hub') return send(res, 200, await hubAction(body));
+      if (p === '/api/statusline') { setUsage(usageFromStatus(body)); return send(res, 200, { ok: true }); }
       if (p === '/api/event') return send(res, 200, await onHookEvent(body));
       if (p === '/api/test-notification') { const r = await notifyMac('Hub test', 'If you can read this, reminders will reach you.'); return send(res, 200, { ok: r.ok, error: r.ok ? '' : clip(r.err, 200) }); }
       if (p === '/api/skills') return send(res, 200, await skillAction(body));
