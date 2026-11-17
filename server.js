@@ -912,7 +912,7 @@ function startRun({ id, src, text, cwd, isNew, files = [], allowEdits = false, d
   const images = files.filter((f) => /\.(png|jpg|gif|webp)$/.test(f));
   const args = src === 'codex'
     ? ['exec', 'resume', '--skip-git-repo-check', ...images.flatMap((f) => ['--image', f]), id, '-']
-    : ['-p', '--output-format', 'stream-json', '--verbose', ...(isNew ? ['--session-id', id] : ['--resume', id]),
+    : ['-p', '--chrome', '--output-format', 'stream-json', '--verbose', ...(isNew ? ['--session-id', id] : ['--resume', id]),
       ...(files.length ? ['--add-dir', UPLOAD_DIR] : []), ...dirs.flatMap((d) => ['--add-dir', d]),
       '--permission-mode', allowEdits && mode !== 'auto' ? 'acceptEdits' : MODES.has(mode) ? (mode === 'manual' ? 'auto' : mode) : 'auto',
       ...(MODELS.has(model) ? ['--model', model] : []), ...(EFFORTS.has(effort) ? ['--effort', effort] : [])];
