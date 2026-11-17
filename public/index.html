@@ -1366,15 +1366,20 @@ function fileLink(pth) {
   const clean = pth.replace(/[.:]+$/, '');
   return `<a class="flink" data-path="${clean}" title="Open ${clean}">${clean}</a>` + pth.slice(clean.length);
 }
+// True when position i of an HTML string is inside a tag or inside an <a> element,
+// so a path or code span there is left alone (no link inside a link or an href).
+function inLink(str, i) {
+  return str.lastIndexOf('<', i - 1) > str.lastIndexOf('>', i - 1) || str.lastIndexOf('<a ', i - 1) > str.lastIndexOf('</a>', i - 1);
+}
 function linkify(t) {
   return t
-    .replace(/(https?:\/\/[^\s<)]+[^\s<).,;:])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/(^|[\s(])((?:localhost|127\.0\.0\.1):\d{2,5}(?:\/[^\s<)]*[^\s<).,;:])?)/g, '$1<a href="http://$2" target="_blank" rel="noopener noreferrer">$2</a>')
-    .replace(PATH_RE, (m, pre, pth) => pre + fileLink(pth));
+    .replace(/(https?:\/\/[^\s<)`]+[^\s<).,;:`])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/(^|[\s(])((?:localhost|127\.0\.0\.1):\d{2,5}(?:\/[^\s<)`]*[^\s<).,;:`])?)/g, '$1<a href="http://$2" target="_blank" rel="noopener noreferrer">$2</a>')
+    .replace(PATH_RE, (m, pre, pth, off, str) => (inLink(str, off) ? m : pre + fileLink(pth)));
 }
 function inline(s) {
   return linkify(s)
-    .replace(/`([^`\n]+)`/g, (m, c) => (/^(?:~|\/Users\/)[^\s]*$/.test(c) && !c.includes('<') ? '<code>' + fileLink(c) + '</code>' : /^(?:localhost|127\.0\.0\.1):\d/.test(c) && !c.includes('<') ? `<code><a href="http://${c}" target="_blank" rel="noopener noreferrer">${c}</a></code>` : '<code>' + c + '</code>'))
+    .replace(/`([^`\n]+)`/g, (m, c, off, str) => inLink(str, off) ? m : (/^(?:~|\/Users\/)[^\s]*$/.test(c) && !c.includes('<') ? '<code>' + fileLink(c) + '</code>' : /^(?:localhost|127\.0\.0\.1):\d/.test(c) && !c.includes('<') ? `<code><a href="http://${c}" target="_blank" rel="noopener noreferrer">${c}</a></code>` : '<code>' + c + '</code>'))
     .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
     .replace(/^#{1,4} (.+)$/gm, '<b class="h">$1</b>');
 }

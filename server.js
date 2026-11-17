@@ -54,7 +54,8 @@ function loadConfig() {
   }
   rules = [];
   for (const t of config.tags || []) {
-    try { rules.push({ name: t.name, re: new RegExp(t.match, 'gi'), weight: t.weight || 1, color: t.color || '#64748b' }); } catch {}
+    const color = /^#[0-9a-f]{3,8}$/i.test(String(t.color || '')) ? t.color : '#64748b';
+    try { rules.push({ name: t.name, re: new RegExp(t.match, 'gi'), weight: t.weight || 1, color }); } catch {}
   }
 }
 
@@ -365,6 +366,8 @@ function loadCodex() {
       db = new DatabaseSync(dbPath, { readOnly: true });
       for (const r of db.prepare("select * from threads where source not like '{%'").all()) {
         if (r.attached_thread_parent_id) continue;
+        // IDs go into the page and into a typed `codex resume` command, so only plain IDs.
+        if (!/^[A-Za-z0-9_-]{8,80}$/.test(String(r.id || ''))) continue;
         const first = r.first_user_message || r.title || r.preview || '';
         if (!first && !r.name) continue;
         rows.push({
@@ -1531,7 +1534,7 @@ const TRIGGERS_FILE = path.join(CLAUDE_DIR, 'skill-triggers.json');
 const SETTINGS_FILE = path.join(CLAUDE_DIR, 'settings.json');
 const LOCK_FILE = path.join(HOME, '.agents', '.skill-lock.json');
 const ROUTER = path.join(CLAUDE_DIR, 'hooks', 'skill-router.py');
-const SKILL_NAME = /^[A-Za-z0-9._-]{1,80}$/;
+const SKILL_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,79}$/;
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 
@@ -1901,6 +1904,8 @@ const PREVIEW_TYPES = {
   pdf: 'application/pdf',
   txt: 'text/plain; charset=utf-8', md: 'text/plain; charset=utf-8', csv: 'text/plain; charset=utf-8', json: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8',
 };
+// Code opens as text: some Macs map .py to Python Launcher, which would run it.
+const OPEN_AS_TEXT = new Set(['py', 'js', 'jsx', 'ts', 'tsx', 'css', 'sh', 'rb', 'pl']);
 const OPEN_EXTRA = new Set(['html', 'ts', 'tsx', 'js', 'jsx', 'css', 'py', 'docx', 'xlsx', 'pptx', 'key', 'pages', 'numbers', 'psd', 'fig', 'zip']);
 
 function safeLocal(raw) {
@@ -1924,7 +1929,7 @@ async function serveFile(req, res, raw) {
   if (!st.isFile()) return send(res, 404, { error: 'not found' });
   const head = {
     'content-type': type, 'accept-ranges': 'bytes', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
-    ...(ext === 'pdf' ? {} : { 'content-security-policy': "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'" }),
+    'content-security-policy': ext === 'pdf' ? "frame-ancestors 'self'" : "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'",
   };
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
   if (m && (m[1] || m[2])) {
@@ -1949,7 +1954,8 @@ async function openLocal(raw, reveal) {
   let isDir = false;
   try { isDir = fs.statSync(real).isDirectory(); } catch {}
   if (!isDir && !PREVIEW_TYPES[ext] && !OPEN_EXTRA.has(ext)) return { ok: false, error: 'This page does not open .' + ext + ' files. Use Show in Finder.' };
-  const r = await run('/usr/bin/open', [real]);
+  const asText = !isDir && OPEN_AS_TEXT.has(ext);
+  const r = await run('/usr/bin/open', asText ? ['-t', real] : [real]);
   return r.ok ? { ok: true } : { ok: false, error: clip(r.err, 200) };
 }
 
@@ -2417,6 +2423,7 @@ function allowed(req) {
   return true;
 }
 
+// writeHead() keeps headers already set with res.setHeader() (used for the page shell).
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
   res.writeHead(code, {
@@ -2447,6 +2454,8 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET') {
       if (p === '/' || p === '/index.html') {
+        res.setHeader('x-frame-options', 'DENY');
+        res.setHeader('content-security-policy', "frame-ancestors 'none'");
         return send(res, 200, await fsp.readFile(path.join(PUBLIC_DIR, 'index.html')), 'text/html; charset=utf-8');
       }
       if (p === '/api/ping') return send(res, 200, { ok: true });
